@@ -1,8 +1,10 @@
 package com.example.flutter_file_downloader
 
-import android.app.Activity
 import android.app.DownloadManager
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Environment
@@ -25,7 +27,7 @@ object PluginMethods {
 
 data class DownloadParameters(val uri: Uri, var headers: Map<String, String>?)
 
-class FlutterFileDownloaderPlugin: FlutterPlugin, MethodCallHandler, ActivityAware, PluginRegistry.RequestPermissionsResultListener {
+class FlutterFileDownloaderPlugin: FlutterPlugin, MethodCallHandler, ActivityAware, PluginRegistry.RequestPermissionsResultListener, BroadcastReceiver() {
 
   private lateinit var channel : MethodChannel
   private lateinit var context: Context
@@ -39,6 +41,7 @@ class FlutterFileDownloaderPlugin: FlutterPlugin, MethodCallHandler, ActivityAwa
     channel = MethodChannel(flutterPluginBinding.binaryMessenger, "flutter_file_downloader")
     context = flutterPluginBinding.applicationContext
     downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+
     channel.setMethodCallHandler(this)
   }
 
@@ -82,9 +85,9 @@ class FlutterFileDownloaderPlugin: FlutterPlugin, MethodCallHandler, ActivityAwa
     if (permissionGranted) {
       request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, downloadParameters.uri.lastPathSegment)
     }
+
     downloadManager.enqueue(request)
     Log.d("DOWNLOAD MANAGER", "Enqueued Request $request")
-    result.success("ok")
   }
 
   override fun onDetachedFromEngine(@NonNull binding: FlutterPlugin.FlutterPluginBinding) {
@@ -102,8 +105,30 @@ class FlutterFileDownloaderPlugin: FlutterPlugin, MethodCallHandler, ActivityAwa
     return false
   }
 
+  override fun onReceive(context: Context?, intent: Intent?) {
+    if (intent?.action == DownloadManager.ACTION_DOWNLOAD_COMPLETE){
+      val downloadId = intent.getLongExtra(
+              DownloadManager.EXTRA_DOWNLOAD_ID, 0)
+      val query = DownloadManager.Query()
+      query.setFilterById(downloadId)
+      val cursor = downloadManager.query(query)
+      if (cursor.moveToFirst()) {
+        val columnIndex: Int = cursor
+                .getColumnIndex(DownloadManager.COLUMN_STATUS)
+        when (cursor.getInt(columnIndex)) {
+          DownloadManager.STATUS_SUCCESSFUL -> result.success("ok")
+          DownloadManager.STATUS_FAILED -> {
+            val reasonIndex = cursor.getColumnIndex(DownloadManager.COLUMN_REASON)
+            result.error("flutter_downloader_error.download_error", "Download error. DownloadManager reason index ${cursor.getInt(reasonIndex)}", null)
+          }
+        }
+      }
+    }
+  }
+
   override fun onAttachedToActivity(binding: ActivityPluginBinding) {
     this.activityPluginBinding = binding
+    activityPluginBinding.activity.registerReceiver(this, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE));
     binding.addRequestPermissionsResultListener(this)
   }
 
@@ -114,10 +139,12 @@ class FlutterFileDownloaderPlugin: FlutterPlugin, MethodCallHandler, ActivityAwa
   override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
     this.activityPluginBinding.removeRequestPermissionsResultListener(this)
     this.activityPluginBinding = binding
+    activityPluginBinding.activity.registerReceiver(this, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE));
     binding.addRequestPermissionsResultListener(this)
   }
 
   override fun onDetachedFromActivity() {
+    activityPluginBinding.activity.unregisterReceiver(this);
     activityPluginBinding.removeRequestPermissionsResultListener(this)
   }
 }
